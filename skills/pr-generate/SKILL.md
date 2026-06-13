@@ -51,7 +51,7 @@ description: Use when the user asks to summarize recent commits into a PR descri
    # 🔑 环境变量：.env* 文件改动 + 代码里新增的 process.env 读取
    git diff --name-status HEAD~$N..HEAD -- '.env*' '**/.env*'
    # 只对 .env* 与代码文件做定向 diff 抓新增 process.env（commit 模式也照跑，不读全量大 diff）
-   git diff HEAD~$N..HEAD -- '.env*' '**/.env*' '*.ts' '*.js' | rg -n '^\+.*process\.env\.[A-Z_][A-Z0-9_]*'
+   git diff HEAD~$N..HEAD -- '.env*' '**/.env*' '*.ts' '*.js' | grep -nE '^\+.*process\.env\.[A-Z_][A-Z0-9_]*'
    # 🗄️ 数据库 / SQL：SQL 文件与 migration 目录
    git diff --name-status HEAD~$N..HEAD -- '*.sql' '**/migrations/**'
    ```
