@@ -81,14 +81,17 @@ description: Use when the user asks to summarize recent commits into a PR descri
    git diff $DIFF_RANGE -- '.env*' '**/.env*' '*.ts' '*.js' | grep -nE '^\+.*process\.env\.[A-Z_][A-Z0-9_]*'
    # 🗄️ 数据库 / SQL：SQL 文件与 migration 目录
    git diff --name-status $DIFF_RANGE -- '*.sql' '**/migrations/**'
+   # 🧭 web 前端新增路由：新增路由上线前要在 IAM 后台配置访问权限
+   git diff $DIFF_RANGE -- 'web/src/router/**' '**/web/src/router/**' | grep -nE "^\+.*\bpath:\s*['\"]"
    ```
    - `.env` 若被 gitignore 没进 git，则以 `.env.example` 或代码中新增的 `process.env.XXX` 为准。
    - 提取每个新增/变更环境变量的**变量名、用途、必填还是可选、默认值**（看 diff 上下文推断）。
    - 提取数据库变更的**表 / 列 / 索引改动**和**迁移脚本路径**，能判断就标注**在哪个库执行**。
+   - **web 新增路由**：只扫 `web/`（Vue 管理端）的路由文件，抓新增的 `path:` 条目。有新增路由 → IAM 那边需为这些路由配置权限，必须在部署须知单列一条（放「环境变量」之后）；一条都没扫到就整条不显示。
 
 4. **生成内容**（diff 模式基于 diff 归纳、commit 模式基于 commit message 归纳；都不逐行复述 diff、不逐条复述 commit）：
    - **PR 标题**：英文，遵循 conventional commit 风格（如 `feat(scope): ...`），概括整批改动的主题。
-   - **PR 正文**：套用下方模板。先放「⚠️ 部署须知」（仅当扫到 env / SQL 时保留），再放按模块/功能归纳的「改动概述」。
+   - **PR 正文**：套用下方模板。先放「⚠️ 部署须知」（仅当扫到 env / IAM 路由 / SQL 之一时保留；顺序：环境变量 → IAM 路由 → 数据库），再放按模块/功能归纳的「改动概述」。
      - **diff 模式**：末尾可附 `## Commits` 短列表供追溯（用 `git log $LOG_RANGE --pretty=format:"%h %s"` 的结果）。
      - **commit 模式**：**省掉 `## Commits` 这一节**——正文本就是按 commit message 归纳的，再列一遍纯属重复。
 
@@ -120,10 +123,13 @@ description: Use when the user asks to summarize recent commits into a PR descri
 
 ## ⚠️ 部署须知
 
-> 仅在扫到对应改动时保留本节；两类都没有就整节删掉，别留空标题。
+> 仅在扫到对应改动时保留本节；三类都没有就整节删掉，别留空标题。每个子块也是「有才留、没有就删」。
 
 **🔑 环境变量**
 - `NEW_ENV_VAR` — 用途说明；必填 / 可选（默认值 …）
+
+**🧭 IAM 路由配置**（web 新增前端路由，需在 IAM 后台配置访问权限）
+- 新增路由 `/xxx` — 用途；上线前需在 IAM 配置访问权限
 
 **🗄️ 数据库 / SQL**
 - 表结构：新增列 `xxx.col_a` / `col_b`、索引 …
@@ -145,7 +151,7 @@ description: Use when the user asks to summarize recent commits into a PR descri
 - 基准分支模式务必：先 `git fetch`、diff 用三点 `origin/<base>...HEAD`、log 用两点 `origin/<base>..HEAD`。
 - 标题用英文，正文说明用中文（除非用户另有要求）。
 - **默认以 diff 为准归纳**，不是把 commit message 抄一遍；按模块/功能聚合，相关 commit 合并讲。仅当用户**显式要求**（如本次 diff 太大、让你按 commits 生成）才切到 commit 模式，用 commit message 归纳。
-- **env 与 SQL 必须主动扫一遍并置顶**：这是 PR review 与上线时最容易踩坑、最该一眼看到的信息；没有就省略该节，有就放在改动概述之前。
+- **env、IAM 路由、SQL 必须主动扫一遍并置顶**：这是 PR review 与上线时最容易踩坑、最该一眼看到的信息；没有就省略对应子块，有就放在改动概述之前（顺序：环境变量 → IAM 路由 → 数据库）。web 新增前端路由（`web/src/router/**` 里新增 `path:`）意味着 IAM 后台要配权限，务必单列提醒。
 - **绝不在 PR 里写出密钥 / 敏感值**：环境变量只列**变量名 + 用途**。`*_KEY` / `*_SECRET` / `*_TOKEN` / `PASSWORD` / `DATABASE_URL` 等的实际值、连接串里的口令一律不要粘进 PR——PR 会进 git / 平台，等于泄密。
 - 保持简洁：「改动概述」抓主干，细节交给 diff 本身。
 - **不写临时文件**，结果只进剪贴板 + 对话预览。
