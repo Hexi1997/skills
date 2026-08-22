@@ -1,6 +1,6 @@
 ---
 name: pr-generate
-description: Use when the user asks to summarize recent commits into a PR description or write a pull request title and body from git history (用户提到 "生成 PR"、"总结最近 commit"、"输出 PR"、"pr-generate"). Also when the PR may touch env vars or database/SQL that need highlighting. Supports two diff ranges - recent N commits, or the diff against a remote base branch (如 "跟 master 的 diff"、"对比 origin/develop"、"base=master").
+description: Use when the user asks to summarize recent commits into a PR description or write a pull request title and body from git history (用户提到 "生成 PR"、"总结最近 commit"、"输出 PR"、"pr-generate"), or pastes a PR / MR / change link and asks to analyze its diff (如 codeup.aliyun.com/…/change/499、GitHub PR 链接). Also when the PR may touch env vars or database/SQL that need highlighting. Supports three diff ranges - recent N commits, the diff against a remote base branch (如 "跟 master 的 diff"、"base=master"), or a pasted PR link.
 ---
 
 # pr-generate
@@ -27,6 +27,7 @@ description: Use when the user asks to summarize recent commits into a PR descri
 |------|----------|-----------|-----------------|
 | **commit 数 N**（默认） | 用户给 N，或只说「最近几个 commit」 | `HEAD~N..HEAD` | `HEAD~N..HEAD` |
 | **远端基准分支 base** | 用户给出基准 / 目标分支（如「跟 master 的 diff」「对比 origin/develop」「base=master」「这个 PR 要并进 release」） | `origin/<base>...HEAD`（**三点** = merge-base..HEAD，正是 PR 真正改动） | `origin/<base>..HEAD`（**两点** = HEAD 上、base 没有的 commit） |
+| **PR / MR 链接** | 用户直接贴 PR / MR / change 链接（Codeup `…/change/<id>`、GitHub `…/pull/<id>`） | `<baseSha>...<headSha>`（从远端 ref 解析，见步骤 1） | `<baseSha>..<headSha>` |
 
 ⚠️ **基准分支模式两个最容易错的点**：
 - **先 `git fetch` 再 diff**：否则 `origin/<base>` 是本地旧引用，diff 不准。
@@ -50,7 +51,64 @@ description: Use when the user asks to summarize recent commits into a PR descri
      DIFF_RANGE="HEAD~$N..HEAD"
      LOG_RANGE="HEAD~$N..HEAD"
      ```
-   - **两者都没给** → 先问用户：「按最近几个 commit（给 N），还是跟某个分支 diff（给分支名）？」拿到答案再继续，**不要自行默认 N、也不要自行假设基准分支**。
+   - 用户**贴了 PR / MR 链接** → PR 链接模式，见下面「## 从 PR 链接解析 diff 范围」，解析出 `baseSha` / `headSha` 后：
+     ```bash
+     DIFF_RANGE="$BASE_SHA...$HEAD_SHA"
+     LOG_RANGE="$BASE_SHA..$HEAD_SHA"
+     ```
+   - **三者都没给** → 先问用户：「按最近几个 commit（给 N）、跟某个分支 diff（给分支名），还是贴 PR 链接？」拿到答案再继续，**不要自行默认 N、也不要自行假设基准分支**。
+
+## 从 PR 链接解析 diff 范围
+
+**核心思路：不调平台 API，用 `git ls-remote` 把 PR 的两端 SHA 捞出来，diff 全在本地做。** 平台 API（如 `aliyun devops GetMergeRequest`）路径参数容易拼错、还要额外鉴权，而 ref 是 git 协议原生的，一条命令就能拿到。
+
+前提：**当前仓库的 `origin` 必须就是链接里那个仓库**（核对 `git remote -v` 的路径与链接里的 `<org>/<repo>` 一致）。不一致就直接告诉用户「本地仓库不是这个 PR 的仓库」，不要瞎猜。
+
+### Codeup（阿里云云效）`https://codeup.aliyun.com/<org>/<repo>/change/<id>`
+
+```bash
+ID=499                                    # 链接末尾的 change id
+git ls-remote origin "refs/changes/$ID/*" # 先看这个 change 暴露了哪些 ref
+# 典型输出：
+#   <sha-A>  refs/changes/499/1          ← 第 1 个 patchset
+#   <sha-A>  refs/changes/499/head       ← 源分支当前 head（要的就是它）
+#   <sha-B>  refs/changes/499/target/1   ← 该 patchset 对应的目标基准
+HEAD_SHA=<sha-A>; BASE_SHA=<sha-B>
+
+# head 可以 fetch 下来（target 不行，见下方坑）
+git fetch origin "refs/changes/$ID/head:refs/mr/$ID/head" --force
+# base sha 通过常规分支拉取即可到本地
+git fetch origin --prune
+git cat-file -t "$BASE_SHA"               # 输出 commit = 本地已有，可以 diff 了
+
+# 核对：target 通常就是 merge-base，两者相等说明范围没算错
+git merge-base "$BASE_SHA" "$HEAD_SHA"
+```
+
+⚠️ **`refs/changes/<id>/target/<n>` 在 `ls-remote` 里看得见、但 `git fetch` 拉不动**（报 `fatal: couldn't find remote ref`）。它是平台的隐藏 ref，**只把它当"读 SHA 用的信息源"**：SHA 拿到手后，靠 `git fetch origin --prune` 让常规分支把这个 commit 带到本地即可（目标基准几乎总在某个分支的历史里）。别在这里反复重试 fetch。
+
+顺带确认一下 PR 的两端归属，写进 PR 正文的开头一句更准：
+
+```bash
+git branch -r --contains "$HEAD_SHA"   # 源分支
+git branch -r --contains "$BASE_SHA"   # 目标分支（含它的分支里挑最合理的那个）
+```
+
+### GitHub `https://github.com/<org>/<repo>/pull/<id>`
+
+```bash
+ID=123
+gh pr diff "$ID"                       # 有 gh 且已登录时最省事
+# 或者走 ref（无 gh 时）：
+git fetch origin "pull/$ID/head:refs/mr/$ID/head" --force
+BASE=$(gh pr view "$ID" --json baseRefName -q .baseRefName)   # 没有 gh 就问用户目标分支
+git fetch origin "$BASE"
+DIFF_RANGE="origin/$BASE...refs/mr/$ID/head"
+```
+
+### 解析完成后
+
+后续步骤（2 收集改动 / 3 显眼区块扫描 / 4 生成内容）**完全不变**，只是把 `$DIFF_RANGE` / `$LOG_RANGE` 换成解析出来的 SHA 区间。PR 链接模式默认仍是 **diff 模式**。
 
 2. **收集改动**（范围一律用步骤 1 设好的 `$DIFF_RANGE` / `$LOG_RANGE`）：
 
@@ -147,8 +205,10 @@ description: Use when the user asks to summarize recent commits into a PR descri
 
 ## 注意
 
-- **范围（N 或基准分支）由用户决定，绝不自行假设**：两者都没给就先问，不要默认一个 N、也不要默认 `master`。
+- **范围（N / 基准分支 / PR 链接）由用户决定，绝不自行假设**：都没给就先问，不要默认一个 N、也不要默认 `master`。
 - 基准分支模式务必：先 `git fetch`、diff 用三点 `origin/<base>...HEAD`、log 用两点 `origin/<base>..HEAD`。
+- **PR 链接模式先核对 `origin` 是不是链接里那个仓库**，再用 `git ls-remote` 取 ref；**不要去调平台 API**（云效的 `GetMergeRequest` 路径参数很难拼对，git ref 一条命令就够）。Codeup 的 `target/<n>` ref 只能读 SHA、不能 fetch。
+- **大 diff 先找 PR 里新增的 spec / 设计文档**（`docs/**/*.md`、migration 文件头部的大段注释）：写得好的仓库会把动机、契约变更、发布顺序、已接受的代价都写在里面，读它比逐行啃 diff 快一个量级，而且能写出「为什么这么改」而不只是「改了什么」。读完再定向补看关键代码文件即可。
 - 标题用英文，正文说明用中文（除非用户另有要求）。
 - **默认以 diff 为准归纳**，不是把 commit message 抄一遍；按模块/功能聚合，相关 commit 合并讲。仅当用户**显式要求**（如本次 diff 太大、让你按 commits 生成）才切到 commit 模式，用 commit message 归纳。
 - **env、IAM 路由、SQL 必须主动扫一遍并置顶**：这是 PR review 与上线时最容易踩坑、最该一眼看到的信息；没有就省略对应子块，有就放在改动概述之前（顺序：环境变量 → IAM 路由 → 数据库）。web 新增前端路由（`web/src/router/**` 里新增 `path:`）意味着 IAM 后台要配权限，务必单列提醒。
