@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+cookies.txt
+cookies.json
+*.mp4
+*.part
