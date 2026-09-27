@@ -20,10 +20,13 @@ def encode_varint(n: int) -> bytes:
             return bytes(out)
 
 
-def encode_elem(progress_ms: int, mode: int, text: str) -> bytes:
+def encode_elem(progress_ms: int, mode: int, text: str, mid_hash: str | None = None) -> bytes:
     body = encode_varint((2 << 3) | 0) + encode_varint(progress_ms)
     body += encode_varint((3 << 3) | 0) + encode_varint(mode)
     body += encode_varint((9 << 3) | 1) + b"\x00" * 8  # 假装一个 fixed64 字段
+    if mid_hash is not None:
+        mh = mid_hash.encode()
+        body += encode_varint((6 << 3) | 2) + encode_varint(len(mh)) + mh
     t = text.encode()
     body += encode_varint((7 << 3) | 2) + encode_varint(len(t)) + t
     return encode_varint((1 << 3) | 2) + encode_varint(len(body)) + body
@@ -79,9 +82,10 @@ class UrlTests(unittest.TestCase):
 
 class DanmakuTests(unittest.TestCase):
     def test_protobuf_parse(self):
-        blob = encode_elem(1500, 1, "哈哈哈哈哈") + encode_elem(61000, 5, "名场面")
+        blob = encode_elem(1500, 1, "哈哈哈哈哈", "58581350") + encode_elem(61000, 5, "名场面")
         dms = bc.parse_danmaku_segment(blob)
-        self.assertEqual(dms, [{"t": 1.5, "mode": 1, "text": "哈哈哈哈哈"}, {"t": 61.0, "mode": 5, "text": "名场面"}])
+        self.assertEqual(dms, [{"t": 1.5, "mode": 1, "mid_hash": "58581350", "text": "哈哈哈哈哈"},
+                               {"t": 61.0, "mode": 5, "text": "名场面"}])
 
     def test_bucket_and_normalize(self):
         dms = [{"t": 1, "text": "哈哈哈哈哈"}, {"t": 2, "text": "哈哈哈"}, {"t": 40, "text": "草！！"}, {"t": 999, "text": "越界"}]
@@ -223,6 +227,18 @@ class StreamerTests(unittest.TestCase):
         self.assertEqual(len(cands), 2)
         self.assertEqual(bc.resolve_streamer(self.reg, "不存在"), (None, []))
 
+    def test_resolve_danmaku_highlights(self):
+        mapping, resolved = bc.resolve_danmaku_highlights(["陌陌=茉茉", "2"], self.reg)
+        self.assertEqual(mapping[bc.uid_mid_hash(1)], "茉茉")
+        self.assertEqual(mapping[bc.uid_mid_hash(2)], "墨鱼")
+        self.assertEqual(resolved[0]["mid"], 1)
+        with self.assertRaisesRegex(ValueError, "不唯一"):
+            bc.resolve_danmaku_highlights(["墨"], self.reg)
+        with self.assertRaisesRegex(ValueError, "未登记"):
+            bc.resolve_danmaku_highlights(["不存在"], self.reg)
+        with self.assertRaisesRegex(ValueError, "格式错误"):
+            bc.resolve_danmaku_highlights(["陌陌="], self.reg)
+
     def test_replay_pick(self):
         vids = [{"bvid": "a", "title": "看看新赛季", "created": 30, "duration": 600, "season_id": 0},
                 {"bvid": "b", "title": "【直播回放】渔力全开", "created": 20, "duration": 30000, "season_id": 5},
@@ -329,3 +345,15 @@ class DanmakuAssTest(unittest.TestCase):
         self.assertIn("&H40FFFFFF", txt)  # 0.75 不透明 -> alpha 0x40
         self.assertIn("Dialogue: 0,0:00:05.25,0:00:13.25,Danmaku,,0,0,0,,{\\move(", txt)
         self.assertTrue(txt.endswith("\n"))
+
+    def test_highlight_by_sender_hash(self):
+        target = bc.uid_mid_hash(1588646945)
+        dms = [{"t": 5.25, "mode": 1, "mid_hash": target, "text": "这个就很可爱啊！"},
+               {"t": 6.0, "mode": 1, "mid_hash": "deadbeef", "text": "普通弹幕"}]
+        ev = bc.layout_danmaku(dms, 0, 30, 1920, 1080, highlights={target: "巴老师"})
+        self.assertIn("【巴老师】这个就很可爱啊！", ev[0]["text"])
+        self.assertIn(bc.DANMAKU_HIGHLIGHT_ASS, ev[0]["text"])
+        self.assertTrue(ev[0]["highlighted"])
+        self.assertNotIn("【巴老师】", ev[1]["text"])
+        self.assertFalse(ev[1]["highlighted"])
+        self.assertEqual(bc.danmaku_highlight_counts(dms, 0, 30, {target: "巴老师"}), {target: 1})

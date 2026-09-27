@@ -49,6 +49,7 @@ python3 $S find    BV13AbH6QEak 恋爱循环 --parts 2                    # 按�
 # …… 由 Claude 读 raw/pNN_compact.txt 写 candidates.json ……
 python3 $S preview BV13AbH6QEak                                      # 预览页
 python3 $S cut     BV13AbH6QEak --ids 1,3,5                          # 切成品，--danmaku 把弹幕烧进画面
+python3 $S cut     BV13AbH6QEak --ids 1 --danmaku-highlight 巴老师的小号=巴老师  # 可选：精确账号 + 简短画面标签
 python3 $S publish BV13AbH6QEak --ids 1,3 --yes                      # 可选：投稿
 python3 $S clean   BV13AbH6QEak                                      # 删视频缓存
 ```
@@ -66,6 +67,7 @@ clips/          成品 mp4 + 封面 jpg
 ## 设计要点
 
 - **只依赖标准库 + yt-dlp + ffmpeg。** 弹幕走 B 站分段 protobuf 接口，自带最小解析器，不装 pip 包；弹幕转 ASS 也是自己排轨道，不依赖 danmaku2ass。
+- **指定账号高亮是按需能力。** `--danmaku-highlight` 只有用户明确要求时才用；它按主播登记 UID 对应的 `midHash` 匹配发送者，不从弹幕内容猜人。
 - **视频按需下载。** 分析只用字幕和弹幕；预览用 B 站在线播放器；只有确认后的分 P 才下载。8 小时回放不会全下。
 - **记住主播。** `~/.config/bili-clip/streamers.json` 记每个主播的 uid、别名、回放系列和切过的场次，`latest` 靠它一句话取最新回放；`streamers/<主播>.md` 记常驻嘉宾、梗和投稿模板给分析用，越用越准。
 - **B 站接口自带 WBI 签名**，UP 主投稿列表和用户搜索都能用，不依赖第三方库。

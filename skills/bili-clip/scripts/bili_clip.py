@@ -38,7 +38,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 CONFIG_DIR = Path(os.environ.get("BILI_CLIP_CONFIG", Path.home() / ".config" / "bili-clip"))
 COOKIES_FILE = CONFIG_DIR / "cookies.txt"
@@ -57,6 +57,7 @@ DANMAKU_SCROLL_SECONDS = 8.0    # 滚动弹幕从右到左穿过画面的时间
 DANMAKU_FIXED_SECONDS = 4.0     # 顶部 / 底部固定弹幕停留时间
 DANMAKU_OPACITY = 0.75
 DANMAKU_AREA = 0.5              # 弹幕占画面高度的比例（0.5 = 半屏）
+DANMAKU_HIGHLIGHT_ASS = r"{\1c&H00D7FF&\3c&H000000&\1a&H00&\3a&H00&\bord5\shad2}"
 FFMPEG_FULL_HINT = ("烧弹幕需要带 libass 的 ffmpeg：macOS 执行 brew install ffmpeg-full，"
                     "或用环境变量 BILI_CLIP_FFMPEG 指定一个带 libass 的 ffmpeg")
 FILLER_RE = re.compile(r"^[\s哎哦嗯啊呃呀哈呵哟嘿嗨唉喔噢咦哇嗷呜哼嘛吧呢啦嘞诶欸哒咯哩嘻嘶噗么呗呦对是好行嗯呐哇！!。.，,、~～…？?\-—·]*$")
@@ -459,7 +460,9 @@ def parse_danmaku_elem(b: bytes) -> dict:
             length, i = _varint(b, i)
             v = b[i:i + length]
             i += length
-            if f == 7:
+            if f == 6:
+                e["mid_hash"] = v.decode("utf-8", "ignore").lower()
+            elif f == 7:
                 e["text"] = v.decode("utf-8", "ignore")
         elif wt == 0:
             v, i = _varint(b, i)
@@ -507,6 +510,36 @@ def fetch_danmaku(bili: Bili, cid: int, duration: float) -> list[dict]:
     dms = [d for seg in results for d in seg]
     dms.sort(key=lambda d: d["t"])
     return dms
+
+
+def uid_mid_hash(uid: int | str) -> str:
+    """B 站弹幕 protobuf 的 midHash：发送者 UID 十进制文本的 CRC32。"""
+    return f"{zlib.crc32(str(uid).encode()) & 0xffffffff:08x}"
+
+
+def resolve_danmaku_highlights(queries: list[str], registry: dict) -> tuple[dict[str, str], list[dict]]:
+    """把主播名 / 别名 / UID 解析成 midHash -> 画面标签，并返回可写回候选的元数据。"""
+    mapping: dict[str, str] = {}
+    resolved: list[dict] = []
+    for raw in queries:
+        spec = raw.strip()
+        query, separator, custom_label = spec.partition("=")
+        query = query.strip()
+        custom_label = custom_label.strip()
+        if not query or (separator and not custom_label):
+            raise ValueError(f"高亮参数格式错误：{raw}；使用 主播名|UID 或 主播名|UID=画面标签")
+        hit, candidates = resolve_streamer(registry, query)
+        if not hit:
+            if candidates:
+                names = "、".join(f"{x['name']}({x['mid']})" for x in candidates)
+                raise ValueError(f"高亮主播“{query}”不唯一：{names}；请改用 UID")
+            raise ValueError(f"高亮主播“{query}”未登记；请先用 streamers 登记或改用已登记 UID")
+        label = custom_label or (hit["name"] if query.isdigit() else query)
+        mid_hash = uid_mid_hash(hit["mid"])
+        mapping[mid_hash] = label
+        resolved.append({"streamer": hit["name"], "label": label, "mid": int(hit["mid"]),
+                         "mid_hash": mid_hash})
+    return mapping, resolved
 
 
 def fetch_space_videos(bili: Bili, mid: int, count: int = 30) -> list[dict]:
@@ -1506,7 +1539,8 @@ def text_width(text: str, fontsize: float) -> float:
 
 def layout_danmaku(dms: list[dict], start: float, end: float, width: int, height: int,
                    fontsize: float | None = None, area: float = DANMAKU_AREA,
-                   scroll_secs: float = DANMAKU_SCROLL_SECONDS, fixed_secs: float = DANMAKU_FIXED_SECONDS) -> list[dict]:
+                   scroll_secs: float = DANMAKU_SCROLL_SECONDS, fixed_secs: float = DANMAKU_FIXED_SECONDS,
+                   highlights: dict[str, str] | None = None) -> list[dict]:
     """把片段内的弹幕排进轨道。返回按时间排序的事件，时间相对片段起点。
 
     滚动弹幕的碰撞规则：同一轨道上后一条出现时，前一条要已完全进入画面；
@@ -1523,9 +1557,14 @@ def layout_danmaku(dms: list[dict], start: float, end: float, width: int, height
         t = float(d["t"])
         if not (start <= t < end):
             continue
-        text = ass_escape(str(d.get("text", "")))
+        label = (highlights or {}).get(str(d.get("mid_hash", "")).lower())
+        raw_text = str(d.get("text", ""))
+        if label:
+            raw_text = f"【{label}】{raw_text}"
+        text = ass_escape(raw_text)
         if not text:
             continue
+        emphasis = DANMAKU_HIGHLIGHT_ASS if label else ""
         mode = int(d.get("mode", 1))
         rel = t - start
         if mode in (4, 5):
@@ -1536,7 +1575,8 @@ def layout_danmaku(dms: list[dict], start: float, end: float, width: int, height
             table[row] = t + fixed_secs
             y = int(row * row_h + 2) if mode == 5 else int(height - row * row_h - 2)
             tag = f"{{\\an8\\pos({width // 2},{y})}}" if mode == 5 else f"{{\\an2\\pos({width // 2},{y})}}"
-            events.append({"start": rel, "end": rel + fixed_secs, "text": tag + text})
+            events.append({"start": rel, "end": rel + fixed_secs, "text": tag + emphasis + text,
+                           "highlighted": bool(label)})
             continue
         if mode not in (1, 2, 3, 6):
             continue
@@ -1557,7 +1597,8 @@ def layout_danmaku(dms: list[dict], start: float, end: float, width: int, height
         scroll_rows[best] = (t, length, speed)
         y = int(best * row_h + 2)
         tag = f"{{\\move({width},{y},{-int(length)},{y})}}"
-        events.append({"start": rel, "end": rel + scroll_secs, "text": tag + text})
+        events.append({"start": rel, "end": rel + scroll_secs, "text": tag + emphasis + text,
+                       "highlighted": bool(label)})
     return events
 
 
@@ -1592,11 +1633,23 @@ def load_danmaku(session: Path, p: dict) -> list[dict] | None:
 
 def write_danmaku_ass(dms: list[dict], start: float, end: float, width: int, height: int, out: Path,
                       opacity: float = DANMAKU_OPACITY, area: float = DANMAKU_AREA,
-                      fontsize: float | None = None) -> int:
-    events = layout_danmaku(dms, start, end, width, height, fontsize=fontsize, area=area)
+                      fontsize: float | None = None, highlights: dict[str, str] | None = None) -> int:
+    events = layout_danmaku(dms, start, end, width, height, fontsize=fontsize, area=area,
+                            highlights=highlights)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(build_ass(events, width, height, fontsize=fontsize, opacity=opacity), "utf-8")
     return len(events)
+
+
+def danmaku_highlight_counts(dms: list[dict], start: float, end: float,
+                             highlights: dict[str, str]) -> dict[str, int]:
+    counts = {mid_hash: 0 for mid_hash in highlights}
+    for d in dms:
+        if start <= float(d.get("t", -1)) < end:
+            mid_hash = str(d.get("mid_hash", "")).lower()
+            if mid_hash in counts:
+                counts[mid_hash] += 1
+    return counts
 
 
 def ffmpeg_cut(src: Path, start: float, end: float, out: Path, fast: bool, ass: Path | None = None) -> None:
@@ -1684,7 +1737,14 @@ def cmd_cut(args: argparse.Namespace) -> None:
     missing = [i for i in ids if i not in by_id]
     if missing:
         die(f"候选不存在: {missing}")
-    burn = args.danmaku
+    highlight_map: dict[str, str] = {}
+    highlight_meta: list[dict] = []
+    if args.danmaku_highlight:
+        try:
+            highlight_map, highlight_meta = resolve_danmaku_highlights(args.danmaku_highlight, load_registry())
+        except ValueError as e:
+            die(str(e))
+    burn = args.danmaku or bool(highlight_map)
     if burn and args.fast:
         info("--fast 走流复制，改不了画面，本次不烧弹幕")
         burn = False
@@ -1700,8 +1760,16 @@ def cmd_cut(args: argparse.Namespace) -> None:
         out = session / "clips" / name
         info(f"切片 #{c['id']}: {fmt_ts(c['start'])} → {fmt_ts(c['end'])} -> {out.name}")
         ass, burned = None, 0
+        highlighted: list[dict] = []
         if burn:
             dms = load_danmaku(session, p)
+            if highlight_map and (not dms or not any(d.get("mid_hash") for d in dms)):
+                info("  现有弹幕缓存没有发送者哈希，为精确高亮重新拉取 ...")
+                dms = fetch_danmaku(Bili(), p["cid"], p["duration"])
+                dm_file = session / "raw" / f"danmaku_{p['cid']}.json"
+                dm_file.write_text(json.dumps(dms, ensure_ascii=False), "utf-8")
+                if dms and not any(d.get("mid_hash") for d in dms):
+                    die("B 站返回的弹幕不含发送者哈希，不能可靠高亮；不会按弹幕文字猜发送者")
             if dms is None:
                 info("  没有这个分 P 的弹幕文件，跳过烧弹幕（重跑 parts 可补）")
             else:
@@ -1709,12 +1777,22 @@ def cmd_cut(args: argparse.Namespace) -> None:
                 ass = session / "cache" / "ass" / f"dm_{re.sub(r'[^A-Za-z0-9_-]', '_', seq)}.ass"
                 burned = write_danmaku_ass(dms, c["start"], c["end"], w, h, ass,
                                            opacity=args.danmaku_opacity, area=args.danmaku_area,
-                                           fontsize=args.danmaku_size * h / 1080 if args.danmaku_size else None)
+                                           fontsize=args.danmaku_size * h / 1080 if args.danmaku_size else None,
+                                           highlights=highlight_map)
                 info(f"  弹幕 {burned} 条 -> {ass.name}（{w}x{h}）")
+                if highlight_map:
+                    counts = danmaku_highlight_counts(dms, c["start"], c["end"], highlight_map)
+                    highlighted = [dict(item, count=counts[item["mid_hash"]]) for item in highlight_meta]
+                    summary = "，".join(f"{x['label']} {x['count']} 条" for x in highlighted)
+                    info(f"  高亮弹幕: {summary}")
                 if burned == 0:
                     ass = None
         ffmpeg_cut(src, c["start"], c["end"], out, fast=args.fast, ass=ass)
         c["danmaku_burned"] = burned
+        if highlight_map and burn:
+            c["highlighted_danmaku"] = highlighted
+        else:
+            c.pop("highlighted_danmaku", None)
         c["stats"] = danmaku_stats_for(session, c, meta["parts"])
         cover_at = c.get("cover_at")
         if cover_at is None:
@@ -1724,8 +1802,11 @@ def cmd_cut(args: argparse.Namespace) -> None:
         c["status"] = "cut"
         c["output"] = str(out)
         c["cover"] = str(cover) if cover.exists() else None
-        results.append({"id": c["id"], "output": str(out), "cover": c["cover"],
-                        "duration": round(c["end"] - c["start"], 1), "danmaku_burned": burned})
+        result = {"id": c["id"], "output": str(out), "cover": c["cover"],
+                  "duration": round(c["end"] - c["start"], 1), "danmaku_burned": burned}
+        if highlighted:
+            result["highlighted_danmaku"] = highlighted
+        results.append(result)
     save_candidates(session, data)
     print(json.dumps({"session": str(session), "clips": results}, ensure_ascii=False, indent=2))
 
@@ -1922,6 +2003,8 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--ids", default="", help="候选 id，逗号分隔；留空为全部")
     s.add_argument("--fast", action="store_true", help="不重编码（关键帧对齐，起止有 1-2 秒误差；不能烧弹幕）")
     s.add_argument("--danmaku", action="store_true", help="把片段内的弹幕烧进画面（默认不烧）")
+    s.add_argument("--danmaku-highlight", action="append", default=[], metavar="主播名|别名|UID[=画面标签]",
+                   help="可选：精确高亮指定主播发送的弹幕；可重复，且会自动启用 --danmaku")
     s.add_argument("--danmaku-opacity", type=float, default=DANMAKU_OPACITY, help="弹幕不透明度 0-1，默认 0.75")
     s.add_argument("--danmaku-area", type=float, default=DANMAKU_AREA, help="弹幕占画面高度比例，默认 0.5 半屏")
     s.add_argument("--danmaku-size", type=float, default=None, help="1080p 下的弹幕字号，默认 57")
