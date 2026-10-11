@@ -9,7 +9,7 @@
 3. 拉取 B 站 AI 字幕和全量弹幕，压缩成「主播在说什么 + 观众在哪炸」对齐的稿子
 4. 你点名了片段（「她唱恋爱循环那段」）就只定位那一处；没给方向就通读推荐 6 到 8 个候选：类型、起止、标题、理由、原句摘录
 5. 生成本地预览页，每个候选内嵌 B 站播放器定位到起点
-6. 你在对话里回复序号和微调，它只下载命中的分 P，用 ffmpeg 精确切出 mp4 和封面，加 `--danmaku` 可把弹幕烧进画面
+6. 你在对话里回复序号和微调，它只下载命中的分 P，用 ffmpeg 精确切出 mp4 和封面，默认把弹幕烧进画面；干净版用 `--no-danmaku`
 7. 可选：用 biliup 投稿，简介自动带上主播和片段中提到的已登记主播 space 链接，发布前把标题、标签、简介列给你确认
 
 ## 安装
@@ -48,7 +48,8 @@ python3 $S analyze BV13AbH6QEak --parts 4-7                          # 拉字幕
 python3 $S find    BV13AbH6QEak 恋爱循环 --parts 2                    # 按关键词在字幕/弹幕里定位片段
 # …… 由 Claude 读 raw/pNN_compact.txt 写 candidates.json ……
 python3 $S preview BV13AbH6QEak                                      # 预览页
-python3 $S cut     BV13AbH6QEak --ids 1,3,5                          # 切成品，--danmaku 把弹幕烧进画面
+python3 $S cut     BV13AbH6QEak --ids 1,3,5                          # 切成品，默认烧录弹幕
+python3 $S cut     BV13AbH6QEak --ids 1 --no-danmaku                  # 明确要求干净版时关闭弹幕
 python3 $S cut     BV13AbH6QEak --ids 1 --danmaku-highlight 巴老师的小号=巴老师  # 可选：精确账号 + 简短画面标签
 python3 $S publish BV13AbH6QEak --ids 1,3 --yes                      # 可选：投稿
 python3 $S clean   BV13AbH6QEak                                      # 删视频缓存

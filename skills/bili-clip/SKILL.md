@@ -15,7 +15,7 @@ description: B 站直播回放切片助手，面向切片员。用户贴 bilibil
 |------|------|--------|
 | python3 ≥ 3.10 | 跑脚本 | 提示安装 |
 | yt-dlp | 导出浏览器 cookie、下载视频 | `brew install yt-dlp` |
-| ffmpeg（带 libass） | 切片、封面截图、把弹幕烧进画面 | `brew install ffmpeg-full`（Homebrew 的 `ffmpeg` 是精简版，没有 libass，切不带弹幕的没问题，`--danmaku` 会报错） |
+| ffmpeg（带 libass） | 切片、封面截图、默认把弹幕烧进画面 | `brew install ffmpeg-full`（默认烧弹幕需要 libass；仅用精简版 ffmpeg 时必须显式 `--no-danmaku` 输出干净版） |
 | biliup（可选） | 投稿 | 只有用户要发布时才提示，见「发布」 |
 
 登录态：AI 字幕必须登录才能拉。脚本首次运行会自动 `yt-dlp --cookies-from-browser chrome` 导出到 `~/.config/bili-clip/cookies.txt`（macOS 首次会弹钥匙串授权，让用户点允许）。失败时告诉用户两条路：换浏览器 `bili_clip.py cookies --browser edge`，或用浏览器插件导出 Netscape 格式 `cookies.txt` 放到该路径。Windows 上 Chrome 新版 cookie 常读不到，直接走导出文件那条路。
@@ -160,8 +160,8 @@ python3 bili_clip.py cut <工作目录> --ids 1,3,5
 ```
 
 - 只下载命中的 P（最高画质，登录态一般是 1080P）到 `cache/`，同一 P 不重复下。
-- 默认重编码（libx264 crf 18），起止精确到帧。用户赶时间可加 `--fast` 走流复制，起止会偏 1 到 2 秒。
-- **用户要弹幕时加 `--danmaku`**，把片段内的弹幕烧进画面（B 站风格滚动弹幕，半屏、75% 不透明、1080p 下 57 号字，顶部 / 底部固定弹幕也支持）。默认不烧。想调样式用 `--danmaku-area 0.3`（占画面高度比例）、`--danmaku-opacity 0.6`、`--danmaku-size 40`（1080p 字号）。`--fast` 和弹幕互斥，加了 `--fast` 会自动不烧。
+- 默认重编码（libx264 crf 18），起止精确到帧。只有用户明确接受无弹幕及起止偏移时才加 `--fast` 走流复制，起止会偏 1 到 2 秒。
+- **正式成品默认烧录弹幕**，直接运行 `cut` 即可，无需加 `--danmaku`（仍保留该参数）。用户明确要求不带弹幕、干净版时加 `--no-danmaku`。弹幕为 B 站风格滚动弹幕，半屏、75% 不透明、1080p 下 57 号字，顶部 / 底部固定弹幕也支持。想调样式用 `--danmaku-area 0.3`（占画面高度比例）、`--danmaku-opacity 0.6`、`--danmaku-size 40`（1080p 字号）。缓存缺失时先补拉弹幕；片段没有弹幕时如实报告 0 条，不把干净版说成带弹幕版。`--fast` 无法烧录弹幕，会自动关闭烧录，不作为默认路径。
 - **高亮指定账号的弹幕是可选分支，不是必经步骤。** 只有用户明确说「高亮某人的弹幕」「把某账号单独标出来」时才用 `--danmaku-highlight <主播名|别名|UID[=画面标签]>`；它会自动启用 `--danmaku`，多个账号就重复传参。例如：
 
   ```

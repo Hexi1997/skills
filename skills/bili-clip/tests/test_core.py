@@ -1,8 +1,12 @@
 """纯函数单元测试，不联网。运行: python3 -m unittest discover -s tests"""
 import json
+import contextlib
+import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import bili_clip as bc  # noqa: E402
@@ -97,6 +101,45 @@ class DanmakuTests(unittest.TestCase):
     def test_percentile(self):
         self.assertEqual(bc.percentile([1, 2, 3, 4, 5], 0.95), 5)
         self.assertEqual(bc.percentile([], 0.5), 0)
+
+
+class CutDefaultsTests(unittest.TestCase):
+    def test_cli_delivers_ass_by_default_and_allows_clean_output(self):
+        cases = [([], 1, True), (["--danmaku"], 1, True), (["--no-danmaku"], 0, True),
+                 (["--fast"], 0, True), ([], 1, False)]
+        for flags, expected_count, has_cache in cases:
+            with self.subTest(flags=flags, has_cache=has_cache), tempfile.TemporaryDirectory() as folder:
+                session = Path(folder)
+                raw = session / "raw"
+                raw.mkdir()
+                part = {"bvid": "BV1", "cid": 11, "page": 1, "duration": 20}
+                (raw / "parts.json").write_text(json.dumps({"parts": [part]}))
+                candidate = {"id": 1, "part": 1, "start": 5, "end": 15,
+                             "type": "搞笑", "title": "测试", "reason": "互动"}
+                (session / "candidates.json").write_text(json.dumps({"candidates": [candidate]}))
+                dms = [
+                    {"t": 2, "mode": 1, "text": "片段外"},
+                    {"t": 6, "mode": 1, "text": "片段内弹幕"},
+                ]
+                if has_cache:
+                    (raw / "danmaku_11.json").write_text(json.dumps(dms))
+                with patch.object(bc, "cached_video", return_value=session / "source.mp4"), \
+                     patch.object(bc, "Bili"), \
+                     patch.object(bc, "fetch_danmaku", return_value=dms) as fetch, \
+                     patch.object(bc, "find_ffmpeg", return_value="ffmpeg"), \
+                     patch.object(bc, "ffprobe_size", return_value=(1920, 1080)), \
+                     patch.object(bc, "ffmpeg_cut") as encode, \
+                     patch.object(bc, "ffmpeg_frame"), contextlib.redirect_stdout(io.StringIO()):
+                    bc.main(["cut", str(session), "--ids", "1", *flags])
+                ass = encode.call_args.kwargs["ass"]
+                if expected_count:
+                    self.assertIn("片段内弹幕", ass.read_text())
+                    self.assertNotIn("片段外", ass.read_text())
+                else:
+                    self.assertIsNone(ass)
+                result = json.loads((session / "candidates.json").read_text())["candidates"][0]
+                self.assertEqual(result["danmaku_burned"], expected_count)
+                self.assertEqual(fetch.call_count, 0 if has_cache else 1)
 
 
 class TranscriptTests(unittest.TestCase):

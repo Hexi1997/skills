@@ -1763,12 +1763,12 @@ def cmd_cut(args: argparse.Namespace) -> None:
         highlighted: list[dict] = []
         if burn:
             dms = load_danmaku(session, p)
-            if highlight_map and (not dms or not any(d.get("mid_hash") for d in dms)):
-                info("  现有弹幕缓存没有发送者哈希，为精确高亮重新拉取 ...")
+            if dms is None or (highlight_map and (not dms or not any(d.get("mid_hash") for d in dms))):
+                info("  补拉弹幕 ..." if dms is None else "  现有弹幕缓存没有发送者哈希，为精确高亮重新拉取 ...")
                 dms = fetch_danmaku(Bili(), p["cid"], p["duration"])
                 dm_file = session / "raw" / f"danmaku_{p['cid']}.json"
                 dm_file.write_text(json.dumps(dms, ensure_ascii=False), "utf-8")
-                if dms and not any(d.get("mid_hash") for d in dms):
+                if highlight_map and dms and not any(d.get("mid_hash") for d in dms):
                     die("B 站返回的弹幕不含发送者哈希，不能可靠高亮；不会按弹幕文字猜发送者")
             if dms is None:
                 info("  没有这个分 P 的弹幕文件，跳过烧弹幕（重跑 parts 可补）")
@@ -2002,7 +2002,10 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("session")
     s.add_argument("--ids", default="", help="候选 id，逗号分隔；留空为全部")
     s.add_argument("--fast", action="store_true", help="不重编码（关键帧对齐，起止有 1-2 秒误差；不能烧弹幕）")
-    s.add_argument("--danmaku", action="store_true", help="把片段内的弹幕烧进画面（默认不烧）")
+    dm = s.add_mutually_exclusive_group()
+    dm.add_argument("--danmaku", dest="danmaku", action="store_true", help="把片段内的弹幕烧进画面（默认开启）")
+    dm.add_argument("--no-danmaku", dest="danmaku", action="store_false", help="关闭默认弹幕烧录，输出干净版")
+    s.set_defaults(danmaku=True)
     s.add_argument("--danmaku-highlight", action="append", default=[], metavar="主播名|别名|UID[=画面标签]",
                    help="可选：精确高亮指定主播发送的弹幕；可重复，且会自动启用 --danmaku")
     s.add_argument("--danmaku-opacity", type=float, default=DANMAKU_OPACITY, help="弹幕不透明度 0-1，默认 0.75")
