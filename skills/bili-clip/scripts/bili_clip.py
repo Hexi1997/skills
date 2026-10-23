@@ -798,7 +798,7 @@ def print_parts(session: Path, meta: dict, ref: dict, whole_season: bool) -> Non
         print(f"{p['index']:<4} {fmt_ts(p['duration']):<9} {sub:<6} {p['danmaku_count']:<7} [{p['bvid']} p{p['page']}] {p['title']}")
     missing = [p["index"] for p in parts if not p["subtitle"]]
     if missing:
-        print(f"\n注意: 序号 {missing} 没有 AI 字幕，无法分析（B 站字幕生成有延迟，可稍后重试）。")
+        print(f"\n注意: 序号 {missing} 没有 B 站 AI 字幕；可稍后重试，或 analyze --local-subtitles 本地识别，也可 subtitles --import-srt 导入。")
     if meta["season"] and not whole_season:
         print(f"\n该视频属于合集《{meta['season']['title']}》共 {len(meta['season']['episodes'])} 集；"
               f"要把整个合集当一场处理，加 --season 重新运行 parts。")
@@ -998,6 +998,75 @@ def percentile(values: list[int], q: float) -> float:
     return float(s[k])
 
 
+def local_audio(session: Path, p: dict, supplied: str | None = None) -> Path:
+    if supplied:
+        audio = Path(supplied).expanduser().resolve()
+        if not audio.is_file():
+            raise ValueError(f'音频文件不存在: {audio}')
+        return audio
+    cache = session / 'cache'
+    for quality in ('best', 'low'):
+        video = cache / f"p{p['index']:02d}_{p['cid']}_{quality}.mp4"
+        if video.exists():
+            return video
+    audio = cache / f"p{p['index']:02d}_{p['cid']}_audio.m4a"
+    if not audio.exists():
+        ytdlp_download(p['bvid'], p['page'], audio, 'ba[ext=m4a]/ba')
+    return audio
+
+
+def local_subtitle_lines(session: Path, p: dict, model: str | None,
+                         audio: str | None = None, start: float = 0,
+                         duration: float | None = None) -> tuple[list[dict], dict]:
+    from local_subtitles import model_path, recognize
+    model_file = model_path(model)  # Validate before downloading audio.
+    source = local_audio(session, p, audio)
+    # External audio must start at this P's zero and cover the requested range.
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                            '-of', 'default=nw=1:nk=1', str(source)], capture_output=True, text=True, check=True)
+    required = min(p['duration'], start+duration) if duration is not None else p['duration']
+    if float(probe.stdout) + 1 < required:
+        raise ValueError('音频短于请求区间；外部音频必须从该分 P 的 00:00:00 开始')
+    lines = recognize(source, model_file, session/'cache'/f"asr_p{p['index']:02d}",
+                      p['duration'], find_ffmpeg(), start, duration)
+    return lines, {'source': 'whisper.cpp', 'model': str(model_file), 'language': 'zh',
+                   'bvid': p['bvid'], 'cid': p['cid'], 'start': start, 'duration': duration}
+
+
+def cmd_subtitles(args: argparse.Namespace) -> None:
+    from local_subtitles import read_srt, write_json
+    session = resolve_session(args.session)
+    meta = load_parts(session)
+    if not 1 <= args.part <= len(meta['parts']):
+        die('分 P 序号越界')
+    p = meta['parts'][args.part-1]
+    try:
+        start = parse_ts(args.start)
+        duration = parse_ts(args.duration) if args.duration is not None else None
+        sample = start != 0 or duration is not None
+        target = session/'raw'/f"p{args.part:02d}_subtitle.json"
+        if not sample and target.exists() and not args.force:
+            die('已有字幕；确需替换请加 --force')
+        if args.import_srt:
+            if sample:
+                die('SRT 导入使用该分 P 的绝对时间，不接受 --start/--duration')
+            lines = read_srt(Path(args.import_srt).expanduser(), p['duration'])
+            provenance = {'source': 'import-srt', 'file': str(Path(args.import_srt).resolve())}
+        else:
+            lines, provenance = local_subtitle_lines(session, p, args.model, args.audio, start, duration)
+        if sample:
+            target = session/'raw'/'asr_samples'/f"p{args.part:02d}_{start:g}-{start+(duration or p['duration']-start):g}_subtitle.json"
+        write_json(target, lines)
+        write_json(target.with_name(target.stem+'_source.json'), provenance)
+        write_srt(lines, target.with_suffix('.srt') if sample else session/'raw'/f'p{args.part:02d}.srt')
+        print(json.dumps({'subtitle': str(target), 'lines': len(lines), 'sample': sample,
+                          'source': provenance}, ensure_ascii=False, indent=2))
+        if not sample:
+            info(f'已写入正式字幕；运行 analyze {session} --parts {args.part} 生成压缩稿和弹幕统计（不要加 --refresh）')
+    except (ValueError, OSError, subprocess.CalledProcessError, KeyError) as exc:
+        die(f'本地字幕失败: {exc}；识别日志在 cache/asr_pNN/ 下，已有正式字幕未替换')
+
+
 def cmd_analyze(args: argparse.Namespace) -> None:
     session = resolve_session(args.session)
     meta = load_parts(session)
@@ -1021,12 +1090,20 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             chosen = pick_subtitle(fetch_subtitle_list(bili, p["bvid"], p["cid"]))
             if not chosen:
                 p["subtitle"] = None
-                summary.append({"index": idx, "status": "no_subtitle", "title": p["title"]})
-                info("  没有 AI 字幕，跳过")
-                continue
-            p["subtitle"] = {"lan": chosen.get("lan"), "url": chosen.get("subtitle_url")}
-            lines = fetch_subtitle_body(bili, chosen)
+                if not args.local_subtitles:
+                    summary.append({"index": idx, "status": "no_subtitle", "title": p["title"]})
+                    info("  没有 AI 字幕，跳过；可用 --local-subtitles 启用本地识别")
+                    continue
+                try:
+                    lines, provenance = local_subtitle_lines(session, p, args.whisper_model)
+                except (ValueError, OSError, subprocess.CalledProcessError, KeyError) as exc:
+                    die(f'本地字幕失败: {exc}；可修复后重跑，已完成分块会复用')
+            else:
+                p["subtitle"] = {"lan": chosen.get("lan"), "url": chosen.get("subtitle_url")}
+                lines = fetch_subtitle_body(bili, chosen)
+                provenance = {"source": "bilibili", "language": chosen.get("lan")}
             sub_json.write_text(json.dumps(lines, ensure_ascii=False), "utf-8")
+            (raw / f"{tag}_subtitle_source.json").write_text(json.dumps(provenance, ensure_ascii=False), "utf-8")
         write_srt(lines, raw / f"{tag}.srt")
         dm_file = raw / f"danmaku_{p['cid']}.json"
         if dm_file.exists() and not args.refresh:
@@ -1043,8 +1120,11 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         (raw / f"{tag}_compact.txt").write_text(header + compact, "utf-8")
         (raw / f"{tag}_danmaku_buckets.json").write_text(json.dumps(buckets, ensure_ascii=False), "utf-8")
         peaks = sorted(((b["count"], b["start"], b["top"]) for b in buckets), reverse=True)[:8]
+        provenance_file = raw / f"{tag}_subtitle_source.json"
+        provenance = json.loads(provenance_file.read_text('utf-8')) if provenance_file.exists() else {"source": "bilibili"}
         summary.append({
             "index": idx, "status": "ok", "title": p["title"], "bvid": p["bvid"], "page": p["page"],
+            "subtitle_source": provenance,
             "duration": p["duration"], "subtitle_lines": len(lines), "danmaku": len(dms),
             "compact_file": str(raw / f"{tag}_compact.txt"), "srt_file": str(raw / f"{tag}.srt"),
             "compact_chars": len(compact),
@@ -1463,7 +1543,10 @@ def build_preview_html(meta: dict, data: dict, local_files: dict[str, str] | Non
                     items.append(f'<div class="sub-line {cls}" data-t="{t0:.2f}" data-t2="{t1:.2f}" '
                                  f'onclick="jumpPlay(\'{cid}\',{t0:.3f})">[{fmt_ts(t0)}] {text}</div>')
                 if items:
-                    subs_html = (f'<div class="subs-title">AI 字幕（深色为片段内，点击跳转）</div>'
+                    source_file = session / 'raw' / f"p{int(c['part']):02d}_subtitle_source.json"
+                    source = json.loads(source_file.read_text('utf-8')).get('source') if source_file.exists() else 'bilibili'
+                    label = {'whisper.cpp': '本地识别字幕', 'import-srt': '导入字幕'}.get(source, 'AI 字幕')
+                    subs_html = (f'<div class="subs-title">{label}（深色为片段内，点击跳转）</div>'
                                  f'<div class="subs" data-role="subs">{"".join(items)}</div>')
         cards.append(f"""
 <section class="card" id="c{cid}">
@@ -1978,8 +2061,21 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("session", help="工作目录或 BV 号")
     s.add_argument("--parts", default="all", help="分 P 序号，如 1,3-4 或 all")
     s.add_argument("--refresh", action="store_true")
+    s.add_argument("--local-subtitles", action="store_true", help="B 站缺字幕时使用 whisper.cpp 本地识别")
+    s.add_argument("--whisper-model", help="本地多语言 ggml 模型路径，也可设置 BILI_CLIP_WHISPER_MODEL")
     s.add_argument("--browser", default="chrome")
     s.set_defaults(fn=cmd_analyze)
+
+    s = sub.add_parser('subtitles', help='本地识别或导入 SRT（试跑不会写入正式字幕缓存）')
+    s.add_argument('session')
+    s.add_argument('--part', type=int, required=True)
+    s.add_argument('--import-srt', help='导入相对此分 P 零点的 SRT')
+    s.add_argument('--model', help='whisper.cpp 多语言 ggml 模型路径')
+    s.add_argument('--audio', help='已有本地音频/视频，必须从该分 P 零点开始')
+    s.add_argument('--start', default='0', help='试跑起点（该分 P 的绝对时间）')
+    s.add_argument('--duration', help='试跑时长；试跑结果与正式字幕隔离')
+    s.add_argument('--force', action='store_true', help='允许替换已有正式字幕')
+    s.set_defaults(fn=cmd_subtitles)
 
     s = sub.add_parser("find", help="按关键词在字幕和弹幕里定位片段")
     s.add_argument("session")

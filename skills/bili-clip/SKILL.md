@@ -52,7 +52,7 @@ python3 bili_clip.py parts "<用户给的链接>"
 - 输出分 P 清单：序号、时长、字幕语言（`ai-zh` 为 AI 字幕，`无` 表示还没生成）、弹幕数、标题。把这张表原样给用户看，让用户回复要分析哪些序号（`1,3-4` 或「全部」）。
 - 一个 BV 多个 P 是最常见的回放形态，默认只列这个 BV 的 P。如果输出末尾提示「该视频属于合集」，只有用户明确要整个合集时才加 `--season` 重跑（合集几十集时会逐集请求，慢）。
 - 直接给合集链接（`space.bilibili.com/<uid>/lists/<id>?type=season`）也可以。
-- 没有 AI 字幕的 P 不能分析。告诉用户 B 站字幕生成有延迟，稍后重跑 `parts` 或 `analyze --refresh`。不做本地转写回退。
+- 没有 B 站 AI 字幕的 P 可以稍后重试，也可显式启用下面的本地识别或导入 SRT。默认不自动启动长时间本地转写。
 - 输出里会告诉你主播档案存不存在，记下来，第 3 步要用。
 
 ### 2. 拉数据
@@ -64,6 +64,29 @@ python3 bili_clip.py analyze <工作目录或BV号> --parts 1,3-4
 每个 P 生成 `raw/pNN_compact.txt`（压缩稿）和 `raw/pNN.srt`（原始字幕），stdout 是 JSON 摘要，含每个 P 的弹幕峰值时刻。
 
 压缩稿格式：每 30 秒一行，`[时间] (弹幕N 🔥 [高频弹幕]) 字幕内容 / 字幕内容 ...`。🔥 表示这 30 秒弹幕密度在本 P 前 5%。语气词行已去掉，`♪` 包着的是唱歌。
+
+### 2.5 本地字幕（可选）
+
+用户希望本地识别，或缺少 B 站字幕时，可用 `whisper.cpp`（`whisper-cli`）识别中文。音频仅在本机处理，不调用云端 ASR。macOS 可 `brew install whisper-cpp`；模型用多语言版，不能用 `.en` 英文专用模型。建议从 `small` 开始，Apple Silicon 可使用 Metal 加速。首次使用先跑 1–3 分钟，核对多人抢话、游戏声音和主播人名；没有实测前不要承诺整场速度。
+
+模型需预先下载到 `~/.cache/bili-clip/models/ggml-small.bin`，或用 `BILI_CLIP_WHISPER_MODEL` / `--model` 指定。官方模型与下载说明见 https://github.com/ggml-org/whisper.cpp/tree/master/models 。模型不随 skill 分发，不自动下载。可用 `BILI_CLIP_WHISPER_CLI` 指定识别程序。
+
+```bash
+# 缺 B 站字幕时本地识别；已有缓存直接复用，有 B 站字幕仍优先用 B 站
+python3 bili_clip.py analyze <工作目录> --parts 3 --local-subtitles
+
+# 先试一小段，绝对时间戳仍对应原分 P；仅写 raw/asr_samples，不冒充全场字幕
+python3 bili_clip.py subtitles <工作目录> --part 3 --start 00:10:00 --duration 90
+
+# 完整识别，或导入用户已有的 SRT；已有正式字幕时需 --force 才能替换
+python3 bili_clip.py subtitles <工作目录> --part 3 --model /path/ggml-small.bin
+python3 bili_clip.py subtitles <工作目录> --part 3 --import-srt /path/p03.srt
+python3 bili_clip.py analyze <工作目录> --parts 3
+```
+
+本地识别优先复用已缓存视频，否则只下载该 P 音频。也可 `subtitles --audio /path/audio.m4a` 使用已有音视频，其零点必须对应该分 P 零点，时长需覆盖请求区间。分成 5 分钟一块识别，完成后缓存，中断重跑会续用；音频、模型或识别设置变更时独立缓存。每块时间戳累加偏移，搜索与预览沿用原分 P 时间。
+
+正式字幕统一写入 `raw/pNN_subtitle.json`、`raw/pNN.srt`；来源写入 `raw/pNN_subtitle_source.json`。`analyze` 继续生成原有压缩稿和弹幕统计，`find`、`preview`、`cut` 可直接衔接。预览区分本地识别、导入和 B 站字幕。样片不进入正式分析；导入前验证时间边界和空内容。仅 `--refresh` 会重新获取 B 站字幕；没有 B 站字幕且未启用本地识别时保留已有文件并跳过，不静默覆盖。已有本地/导入字幕希望继续使用时不要加 `--refresh`。
 
 ### 3. 分析、推荐
 
