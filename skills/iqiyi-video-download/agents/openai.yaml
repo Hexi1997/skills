@@ -1,0 +1,4 @@
+interface:
+  display_name: "爱奇艺分集视频下载"
+  short_description: "从浏览器实际播放请求定位爱奇艺分集视频，下载并验证可用 MP4"
+  default_prompt: "使用 $iqiyi-video-download 下载指定爱奇艺剧集，核对集号并验证 MP4，默认只保存到本地。"
