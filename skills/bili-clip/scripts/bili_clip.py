@@ -1973,7 +1973,7 @@ def cmd_publish(args: argparse.Namespace) -> None:
     print(json.dumps({"mode": "as_parts" if args.as_parts else "separate", "dtime": args.at, "plans": plans},
                      ensure_ascii=False, indent=2))
     if not args.yes:
-        print("\n以上是投稿计划（未提交）。确认无误后加 --yes 再次运行以真正上传。", file=sys.stderr)
+        print("\n以上仅为投稿计划，未提交。用户已确认发布时，直接加 --yes 上传，无需再次展示计划。", file=sys.stderr)
         return
     biliup = need_tool("biliup", "请从 https://github.com/biliup/biliup-rs/releases 下载 biliup 并放入 PATH，然后运行 `biliup login` 扫码登录")
     cookie_json = Path.cwd() / "cookies.json"
