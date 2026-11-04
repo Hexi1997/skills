@@ -1,0 +1,4 @@
+interface:
+  display_name: "B 站封面制作"
+  short_description: "结合视频内容、标题和主播形象制作简洁醒目的封面，兼容双比例裁剪"
+  default_prompt: "使用 $bili-cover 为这段视频制作封面，沿用已确认的主播形象和文案。"
