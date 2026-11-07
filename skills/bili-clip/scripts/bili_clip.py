@@ -1936,8 +1936,8 @@ def build_publish_plan(meta: dict, c: dict, extra_tags: list[str], registry: dic
             dedup.append(t)
     source = f"https://www.bilibili.com/video/{c['bvid']}?p={c['page']}&t={int(c['start'])}"
     desc = str(c.get("desc") or "").strip()
-    missing_links = [f"https://space.bilibili.com/{mid}"
-                     for _, mid in publish_streamer_links(meta, c, registry)
+    missing_links = [f"{name}：https://space.bilibili.com/{mid}"
+                     for name, mid in publish_streamer_links(meta, c, registry)
                      if f"https://space.bilibili.com/{mid}" not in desc]
     desc = "\n".join(([desc] if desc else []) + missing_links)
     return {"id": c["id"], "file": c["output"], "cover": c.get("cover"),

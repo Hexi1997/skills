@@ -203,8 +203,8 @@ class CandidateTests(unittest.TestCase):
 
         plan = bc.build_publish_plan(meta, c, [], registry=registry)
 
-        self.assertEqual(plan["desc"], "https://space.bilibili.com/27564630\n"
-                                     "https://space.bilibili.com/1588646945")
+        self.assertEqual(plan["desc"], "丝茉茉i：https://space.bilibili.com/27564630\n"
+                                     "巴老师的小号：https://space.bilibili.com/1588646945")
         self.assertEqual(plan["source"], "https://www.bilibili.com/video/BV1?p=1&t=1956")
 
     def test_publish_plan_preserves_explicit_description_without_duplicate_links(self):
