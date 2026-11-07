@@ -188,6 +188,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(len(plan["title"]), 80)
         self.assertEqual(plan["source"], "https://www.bilibili.com/video/BV1?p=2&t=65")
         self.assertEqual(plan["tid"], 172)
+        self.assertEqual(plan["desc"], "")
 
     def test_publish_plan_adds_owner_and_mentioned_streamer_space_links(self):
         meta = {"owner": {"name": "丝茉茉i", "mid": 27564630}, "tags": [], "title": "回放", "tid": 17}
@@ -202,9 +203,17 @@ class CandidateTests(unittest.TestCase):
 
         plan = bc.build_publish_plan(meta, c, [], registry=registry)
 
-        self.assertIn("丝茉茉i：https://space.bilibili.com/27564630", plan["desc"])
-        self.assertIn("巴老师的小号：https://space.bilibili.com/1588646945", plan["desc"])
-        self.assertNotIn("https://space.bilibili.com/1191162350", plan["desc"])
+        self.assertEqual(plan["desc"], "https://space.bilibili.com/27564630\n"
+                                     "https://space.bilibili.com/1588646945")
+        self.assertEqual(plan["source"], "https://www.bilibili.com/video/BV1?p=1&t=1956")
+
+    def test_publish_plan_preserves_explicit_description_without_duplicate_links(self):
+        meta = {"owner": {"name": "主播A", "mid": 123}, "title": "回放"}
+        c = {"id": 1, "bvid": "BV1", "page": 1, "start": 0, "end": 60,
+             "title": "片段", "reason": "内部剪辑说明", "output": "/tmp/a.mp4",
+             "desc": "用户指定的简介\nhttps://space.bilibili.com/123"}
+        plan = bc.build_publish_plan(meta, c, [])
+        self.assertEqual(plan["desc"], c["desc"])
 
     def test_preview_html(self):
         meta = {"title": "回放<b>", "owner": {"name": "A"}, "parts": [{"duration": 3600}]}

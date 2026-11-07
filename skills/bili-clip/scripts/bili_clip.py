@@ -1935,14 +1935,11 @@ def build_publish_plan(meta: dict, c: dict, extra_tags: list[str], registry: dic
         if t and t not in dedup:
             dedup.append(t)
     source = f"https://www.bilibili.com/video/{c['bvid']}?p={c['page']}&t={int(c['start'])}"
-    desc = c.get("desc") or (f"切自 {owner} 直播回放《{meta['title']}》 P{c['page']} {fmt_ts(c['start'])}-{fmt_ts(c['end'])}\n"
-                             f"原视频: {source}\n{c.get('reason', '')}")
-    missing_links = [(name, mid) for name, mid in publish_streamer_links(meta, c, registry)
+    desc = str(c.get("desc") or "").strip()
+    missing_links = [f"https://space.bilibili.com/{mid}"
+                     for _, mid in publish_streamer_links(meta, c, registry)
                      if f"https://space.bilibili.com/{mid}" not in desc]
-    if missing_links:
-        desc += "\n\n相关主播：\n" + "\n".join(
-            f"{name}：https://space.bilibili.com/{mid}" for name, mid in missing_links
-        )
+    desc = "\n".join(([desc] if desc else []) + missing_links)
     return {"id": c["id"], "file": c["output"], "cover": c.get("cover"),
             "title": (c.get("publish_title") or c["title"])[:80],
             "desc": desc[:2000], "tags": dedup[:10], "tid": meta.get("tid") or 171,
